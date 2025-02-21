@@ -80,11 +80,16 @@ contract TokenStaking is ReentrancyGuard {
         
         StakingPlan memory plan = stakingPlans[userStake.planId];
         
+        // Check if lock period has not expired yet
+        if (block.timestamp < userStake.startTime + plan.durationInSeconds) {
+            return 0;
+        }
+        
         // Calculate time since last reward claim (or start time if never claimed)
         uint256 startTime = userStake.lastRewardWithdrawTime > 0 ? 
             userStake.lastRewardWithdrawTime : userStake.startTime;
             
-        // Simply calculate time staked since last reward claim
+        // Calculate time staked since last reward claim
         uint256 timeStaked = block.timestamp - startTime;
         
         // Calculate rewards at the original plan's emission rate
