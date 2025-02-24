@@ -1,13 +1,5 @@
-# Sample Hardhat Project
+README
 
-This project demonstrates a basic Hardhat use case. It comes with a sample contract, a test for that contract, and a Hardhat Ignition module that deploys that contract.
-
-Try running some of the following tasks:
-
-```shell
-npx hardhat help
-npx hardhat test
-REPORT_GAS=true npx hardhat test
-npx hardhat node
-npx hardhat ignition deploy ./ignition/modules/Lock.js
-```
+npx hardhat compile
+npx hardhat run .\scripts\deploy.js --network sepolia 
+npx hardhat verify --network sepolia 0xac146e30471266c88186d7150acbcfef8aa03e5b "0x147eBDd7312595c00572FbDdCa0aAe6615E80B76" "0x147eBDd7312595c00572FbDdCa0aAe6615E80B76"
