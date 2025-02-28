@@ -46,7 +46,6 @@ describe("TokenStaking", function () {
     const rewardsAmount = ethers.parseUnits("100000000", 18);
     await stakingToken.mint(await stakingContract.getAddress(), rewardsAmount);
 
-
     // Mint tokens to users
     const mintAmount = ethers.parseUnits("10000", 18);
     await stakingToken.mint(addr1.address, mintAmount);
@@ -174,7 +173,14 @@ describe("TokenStaking", function () {
 
       expect(rewards1).to.be.gt(0);
       expect(rewards2).to.be.gt(0);
-      expect(rewards1).to.equal(rewards2); // Should get equal rewards for next period
+
+      /* 
+        25 days full payment + 5 days half payment = 27.5
+        5 days half payment = 2.5
+      */
+     
+      const ratio = rewards1 / rewards2;
+      expect(ratio).to.be.equals(11n); 
     });
   });
 
@@ -199,7 +205,7 @@ describe("TokenStaking", function () {
 
       await stakingContract.connect(addr1).withdrawRewards();
       const userStake = await stakingContract.getUserStake(addr1.address);
-      expect(userStake.pendingRewards).to.equal(0);
+      expect(userStake.rewards).to.equal(0);
     });
   });
 
