@@ -10,6 +10,8 @@ async function main() {
     const tokenAddress = await token1.getAddress();
     console.log("Deploying staking contract...");
     const stakingContract = await contract.deploy(tokenAddress, tokenAddress);
+    await stakingContract.waitForDeployment();
+    console.log("Staking contract deployed to:", await stakingContract.getAddress());
   }
   
   main()
