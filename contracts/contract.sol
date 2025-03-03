@@ -21,14 +21,13 @@ contract TokenStaking is ReentrancyGuard {
 
     struct UserStake {
         uint256 amount;
-        uint256 planId;
         bool isActive;
         uint256 rewards; // Accumulated rewards
         uint256 userRewardPerTokenPaid; // Last rewards per token paid to user
     }
     
     mapping(uint256 => StakingPlan) public stakingPlans;
-    mapping(address => UserStake) public userStakes;
+    mapping(address => mapping(uint256 => UserStake)) public userStakes;
     
     uint256 public constant MAX_REWARDS = 100_000_000 * 1e18; // 100M tokens in wei
     uint256 public totalWithdrawnRewards;
@@ -75,24 +74,25 @@ contract TokenStaking is ReentrancyGuard {
     /**
      * @dev Calculate pending rewards for a user
      * @param user Address of the user
+     * @param planId The plan ID to query rewards for
      * @return Pending rewards amount
      */
-    function pendingRewards(address user) public view returns (uint256) {
-        UserStake memory userStake = userStakes[user];
+    function pendingRewards(address user, uint256 planId) public view returns (uint256) {
+        UserStake memory userStake = userStakes[user][planId];
         
         if (!userStake.isActive) {
             return 0;
         }
-
-        StakingPlan memory plan = stakingPlans[userStake.planId];
-    
+        
+        StakingPlan memory plan = stakingPlans[planId];
+        
         // Check if lock period has completed for the plan
         if (block.timestamp < plan.startTime + plan.durationInSeconds) {
             return 0;
         }
-                
+        
         // Get current reward per token for the plan
-        uint256 currentRewardPerToken = rewardPerToken(userStake.planId);
+        uint256 currentRewardPerToken = rewardPerToken(planId);
         
         // Calculate new rewards since last update
         return userStake.rewards + 
@@ -118,23 +118,28 @@ contract TokenStaking is ReentrancyGuard {
     /**
      * @dev Update rewards for a specific user
      * @param user Address of the user
+     * @param planId The plan ID to update rewards for
      */
-    function updateReward(address user) internal {
+    function updateReward(address user, uint256 planId) internal {
         if (user == address(0)) return;
         
-        UserStake storage userStake = userStakes[user];
+        UserStake storage userStake = userStakes[user][planId];
         if (!userStake.isActive) return;
         
-        uint256 planId = userStake.planId;
+        StakingPlan storage plan = stakingPlans[planId];
         
         updateRewardVariables(planId);
         
-        // Calculate earned rewards based on accumulated reward per token
-        uint256 earnedRewards = (userStake.amount * 
-                               (stakingPlans[planId].rewardPerTokenStored - userStake.userRewardPerTokenPaid)) / 1e18;
+        // Only calculate earned rewards if lock period has ended for the plan
+        if (block.timestamp > plan.startTime + plan.durationInSeconds) {
+            // Calculate earned rewards based on accumulated reward per token
+            uint256 earnedRewards = (userStake.amount * 
+                                   (plan.rewardPerTokenStored - userStake.userRewardPerTokenPaid)) / 1e18;
+            
+            userStake.rewards += earnedRewards;
+        }
         
-        userStake.rewards += earnedRewards;
-        userStake.userRewardPerTokenPaid = stakingPlans[planId].rewardPerTokenStored;
+        userStake.userRewardPerTokenPaid = plan.rewardPerTokenStored;
     }
 
     /**
@@ -146,28 +151,27 @@ contract TokenStaking is ReentrancyGuard {
         require(amount > 0, "Amount must be greater than 0");
         require(stakingPlans[planId].durationInSeconds > 0, "Invalid plan");
         
-        updateReward(msg.sender);
+        updateReward(msg.sender, planId);
         
         stakingToken.transferFrom(msg.sender, address(this), amount);
         
-        UserStake storage userStake = userStakes[msg.sender];
+        UserStake storage userStake = userStakes[msg.sender][planId];
         StakingPlan storage plan = stakingPlans[planId];
-
+        
         // Set plan start time if this is the first stake in this plan
         if (!plan.isActive) {
             plan.startTime = block.timestamp;
             plan.isActive = true;
         }
         
+        // Always update reward variables when stake amount changes
+        updateRewardVariables(planId);
+        
         if (userStake.isActive) {
-            require(userStake.planId == planId, "Cannot stake in different plan");
             userStake.amount += amount;
         } else {
-            updateRewardVariables(planId);
-            
-            userStakes[msg.sender] = UserStake({
+            userStakes[msg.sender][planId] = UserStake({
                 amount: amount,
-                planId: planId,
                 isActive: true,
                 rewards: 0,
                 userRewardPerTokenPaid: plan.rewardPerTokenStored
@@ -180,12 +184,13 @@ contract TokenStaking is ReentrancyGuard {
     }
 
     /**
-     * @dev Withdraw earned rewards
+     * @dev Withdraw earned rewards from a specific plan
+     * @param planId The plan ID to withdraw rewards from
      */
-    function withdrawRewards() external nonReentrant {
-        updateReward(msg.sender);
+    function withdrawRewards(uint256 planId) external nonReentrant {
+        updateReward(msg.sender, planId);
         
-        UserStake storage userStake = userStakes[msg.sender];
+        UserStake storage userStake = userStakes[msg.sender][planId];
         require(userStake.isActive, "No active stake");
         
         uint256 rewards = userStake.rewards;
@@ -202,23 +207,26 @@ contract TokenStaking is ReentrancyGuard {
     }
 
     /**
-     * @dev Withdraw staked tokens after lock period
+     * @dev Withdraw staked tokens from a specific plan after lock period
+     * @param planId The plan ID to withdraw stake from
      */
-    function withdrawStake() external nonReentrant {
-        UserStake storage userStake = userStakes[msg.sender];
+    function withdrawStake(uint256 planId) external nonReentrant {
+        UserStake storage userStake = userStakes[msg.sender][planId];
         require(userStake.isActive, "No active stake");
-
-        StakingPlan storage plan = stakingPlans[userStake.planId];
+        
+        StakingPlan storage plan = stakingPlans[planId];
         require(
             block.timestamp >= plan.startTime + plan.durationInSeconds,
             "Lock period not expired"
         );
         
-        updateReward(msg.sender);
+        updateReward(msg.sender, planId);
+        
+        // Update reward variables when total staked amount changes
+        updateRewardVariables(planId);
         
         uint256 rewards = userStake.rewards;
         uint256 amount = userStake.amount;
-        uint256 planId = userStake.planId;
         
         // Update state
         plan.totalStaked -= amount;
@@ -230,7 +238,7 @@ contract TokenStaking is ReentrancyGuard {
         if (plan.totalStaked == 0) {
             plan.isActive = false;
         }
-
+        
         // Transfer original stake
         stakingToken.transfer(msg.sender, amount);
         
@@ -270,23 +278,62 @@ contract TokenStaking is ReentrancyGuard {
 }
     
     /**
-     * @dev Get user stake details
+     * @dev Get user stake details for a specific plan
      * @param user Address of the user
+     * @param planId The plan ID to query
      */
-    function getUserStake(address user) external view returns (
+    function getUserStake(address user, uint256 planId) external view returns (
         uint256 amount,
-        uint256 planId,
-        bool isActive,
         uint256 rewards,
+        bool isActive,
         uint256 pendingReward
     ) {
-        UserStake memory userStake = userStakes[user];
+        UserStake memory userStake = userStakes[user][planId];
         return (
             userStake.amount,
-            userStake.planId,
-            userStake.isActive,
             userStake.rewards,
-            pendingRewards(user)
+            userStake.isActive,
+            pendingRewards(user, planId)
         );
+    }
+
+    /**
+     * @dev Get total staked amount across all plans for a user
+     * @param user Address of the user
+     */
+    function getTotalUserStake(address user) external view returns (uint256) {
+        uint256 total = 0;
+        uint256[] memory planIds = new uint256[](4);
+        planIds[0] = 1;
+        planIds[1] = 3;
+        planIds[2] = 6;
+        planIds[3] = 12;
+        
+        for (uint256 i = 0; i < planIds.length; i++) {
+            if (userStakes[user][planIds[i]].isActive) {
+                total += userStakes[user][planIds[i]].amount;
+            }
+        }
+        
+        return total;
+    }
+
+    /**
+     * @dev Get total pending rewards across all plans for a user
+     * @param user Address of the user
+     */
+    function getTotalPendingRewards(address user) external view returns (uint256) {
+        uint256 total = 0;
+        uint256[] memory planIds = new uint256[](4);
+        planIds[0] = 1;
+        planIds[1] = 3;
+        planIds[2] = 6;
+        planIds[3] = 12;
+        
+        for (uint256 i = 0; i < planIds.length; i++) {
+            total += pendingRewards(user, planIds[i]);
+        }
+        
+        return total;
     }
 }

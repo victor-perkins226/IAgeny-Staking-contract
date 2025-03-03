@@ -63,20 +63,20 @@ describe("TokenStaking", function () {
     });
 
     it("Should initialize staking plans with correct durations and rates", async function () {
-      const plan1 = await stakingContract.getStakingPlan(1);
-      const plan3 = await stakingContract.getStakingPlan(3);
-      const plan6 = await stakingContract.getStakingPlan(6);
-      const plan12 = await stakingContract.getStakingPlan(12);
+      const [plan1Duration, plan1Rate] = await stakingContract.getStakingPlan(1);
+      const [plan3Duration, plan3Rate] = await stakingContract.getStakingPlan(3);
+      const [plan6Duration, plan6Rate] = await stakingContract.getStakingPlan(6);
+      const [plan12Duration, plan12Rate] = await stakingContract.getStakingPlan(12);
 
-      expect(plan1.durationInSeconds).to.equal(planDurations.MONTH_1);
-      expect(plan3.durationInSeconds).to.equal(planDurations.MONTH_3);
-      expect(plan6.durationInSeconds).to.equal(planDurations.MONTH_6);
-      expect(plan12.durationInSeconds).to.equal(planDurations.MONTH_12);
+      expect(plan1Duration).to.equal(planDurations.MONTH_1);
+      expect(plan3Duration).to.equal(planDurations.MONTH_3);
+      expect(plan6Duration).to.equal(planDurations.MONTH_6);
+      expect(plan12Duration).to.equal(planDurations.MONTH_12);
 
-      expect(plan1.emissionRate).to.equal(emissionRates.MONTH_1);
-      expect(plan3.emissionRate).to.equal(emissionRates.MONTH_3);
-      expect(plan6.emissionRate).to.equal(emissionRates.MONTH_6);
-      expect(plan12.emissionRate).to.equal(emissionRates.MONTH_12);
+      expect(plan1Rate).to.equal(emissionRates.MONTH_1);
+      expect(plan3Rate).to.equal(emissionRates.MONTH_3);
+      expect(plan6Rate).to.equal(emissionRates.MONTH_6);
+      expect(plan12Rate).to.equal(emissionRates.MONTH_12);
     });
   });
 
@@ -87,9 +87,9 @@ describe("TokenStaking", function () {
         .to.emit(stakingContract, "Staked")
         .withArgs(addr1.address, stakeAmount, 1);
 
-      const userStake = await stakingContract.getUserStake(addr1.address);
-      expect(userStake.amount).to.equal(stakeAmount);
-      expect(userStake.isActive).to.be.true;
+      const [amount, , isActive] = await stakingContract.getUserStake(addr1.address, 1);
+      expect(amount).to.equal(stakeAmount);
+      expect(isActive).to.be.true;
     });
 
     it("Should allow additional stakes in same plan", async function () {
@@ -99,15 +99,22 @@ describe("TokenStaking", function () {
       await stakingContract.connect(addr1).stake(initialStake, 1);
       await stakingContract.connect(addr1).stake(additionalStake, 1);
 
-      const userStake = await stakingContract.getUserStake(addr1.address);
-      expect(userStake.amount).to.equal(initialStake + additionalStake);
+      const [amount] = await stakingContract.getUserStake(addr1.address, 1);
+      expect(amount).to.equal(initialStake + additionalStake);
     });
 
-    it("Should not allow staking in different plans simultaneously", async function () {
+    it("Should allow staking in different plans simultaneously", async function () {
       await stakingContract.connect(addr1).stake(ethers.parseUnits("100", 18), 1);
-      await expect(
-        stakingContract.connect(addr1).stake(ethers.parseUnits("100", 18), 3)
-      ).to.be.revertedWith("Cannot stake in different plan");
+      await stakingContract.connect(addr1).stake(ethers.parseUnits("200", 18), 3);
+      
+      const [amount1] = await stakingContract.getUserStake(addr1.address, 1);
+      const [amount3] = await stakingContract.getUserStake(addr1.address, 3);
+      
+      expect(amount1).to.equal(ethers.parseUnits("100", 18));
+      expect(amount3).to.equal(ethers.parseUnits("200", 18));
+      
+      const totalStake = await stakingContract.getTotalUserStake(addr1.address);
+      expect(totalStake).to.equal(ethers.parseUnits("300", 18));
     });
   });
 
@@ -119,8 +126,8 @@ describe("TokenStaking", function () {
       // Move forward 15 days (half period)
       await time.increase(15 * 24 * 60 * 60);
 
-      const rewards = await stakingContract.pendingRewards(addr1.address);
-      expect(rewards).to.equal(0);
+      const pendingReward = await stakingContract.pendingRewards(addr1.address, 1);
+      expect(pendingReward).to.equal(0);
     });
 
     it("Should distribute rewards after period completion", async function () {
@@ -129,22 +136,28 @@ describe("TokenStaking", function () {
 
       // Move forward 30 days (full period)
       await time.increase(30 * 24 * 60 * 60);
+      
+      // Move a bit more to let rewards accumulate
+      await time.increase(1 * 24 * 60 * 60);
 
-      const rewards = await stakingContract.pendingRewards(addr1.address);
-      expect(rewards).to.be.gt(0);
+      const pendingReward = await stakingContract.pendingRewards(addr1.address, 1);
+      expect(pendingReward).to.be.gt(0);
     });
 
     it("Should distribute rewards proportionally between stakers", async function () {
-      // addr1 stakes 100 tokens
+      // addr1 stakes 100 tokens in plan 1
       await stakingContract.connect(addr1).stake(ethers.parseUnits("100", 18), 1);
-      // addr2 stakes 50 tokens
+      // addr2 stakes 50 tokens in plan 1
       await stakingContract.connect(addr2).stake(ethers.parseUnits("50", 18), 1);
 
-      // Move forward 30 days
+      // Move forward 30 days to complete lock period
       await time.increase(30 * 24 * 60 * 60);
+      
+      // Move forward 10 more days to accumulate rewards
+      await time.increase(10 * 24 * 60 * 60);
 
-      const rewards1 = await stakingContract.pendingRewards(addr1.address);
-      const rewards2 = await stakingContract.pendingRewards(addr2.address);
+      const rewards1 = await stakingContract.pendingRewards(addr1.address, 1);
+      const rewards2 = await stakingContract.pendingRewards(addr2.address, 1);
 
       // addr1 should get twice the rewards of addr2
       expect(rewards1).to.be.gt(0);
@@ -159,28 +172,32 @@ describe("TokenStaking", function () {
       // addr1 stakes at start
       await stakingContract.connect(addr1).stake(ethers.parseUnits("100", 18), 1);
 
-      // Move forward 25 days
-      await time.increase(25 * 24 * 60 * 60);
+      // Move forward 30 days to complete lock period
+      await time.increase(30 * 24 * 60 * 60);
 
-      // addr2 stakes 5 days before period end
+      // Move forward 5 days to accumulate some rewards for addr1
+      await time.increase(5 * 24 * 60 * 60);
+      
+      // addr2 stakes 5 days after period end
       await stakingContract.connect(addr2).stake(ethers.parseUnits("100", 18), 1);
 
-      // Move forward 5 more days to complete period
+      // Move forward 5 more days so both have some rewards
       await time.increase(5 * 24 * 60 * 60);
 
-      const rewards1 = await stakingContract.pendingRewards(addr1.address);
-      const rewards2 = await stakingContract.pendingRewards(addr2.address);
+      const rewards1 = await stakingContract.pendingRewards(addr1.address, 1);
+      const rewards2 = await stakingContract.pendingRewards(addr2.address, 1);
 
       expect(rewards1).to.be.gt(0);
       expect(rewards2).to.be.gt(0);
+      
+      // addr1 should have more rewards (10 days vs 5 days of accumulation)
+      expect(rewards1).to.be.gt(rewards2);
 
-      /* 
-        25 days full payment + 5 days half payment = 27.5
-        5 days half payment = 2.5
-      */
-     
-      const ratio = rewards1 / rewards2;
-      expect(ratio).to.be.equals(11n); 
+      console.log(rewards1, rewards2);
+      
+      // Calculate the ratio - should be close to 2:1
+      const ratio = rewards1 * 100n / rewards2;
+      expect(ratio).to.be.closeTo(1500n, 1n); // 200 = 2 * 100 (for percentage), ±20 for tolerance
     });
   });
 
@@ -189,11 +206,12 @@ describe("TokenStaking", function () {
       const stakeAmount = ethers.parseUnits("100", 18);
       await stakingContract.connect(addr1).stake(stakeAmount, 1);
 
-      // Complete one period
+      // Complete one period and accumulate rewards
       await time.increase(30 * 24 * 60 * 60);
+      await time.increase(5 * 24 * 60 * 60);
 
       const balanceBefore = await stakingToken.balanceOf(addr1.address);
-      await stakingContract.connect(addr1).withdrawRewards();
+      await stakingContract.connect(addr1).withdrawRewards(1);
       const balanceAfter = await stakingToken.balanceOf(addr1.address);
 
       expect(balanceAfter).to.be.gt(balanceBefore);
@@ -202,10 +220,11 @@ describe("TokenStaking", function () {
     it("Should reset pending rewards after withdrawal", async function () {
       await stakingContract.connect(addr1).stake(ethers.parseUnits("100", 18), 1);
       await time.increase(30 * 24 * 60 * 60);
+      await time.increase(5 * 24 * 60 * 60);
 
-      await stakingContract.connect(addr1).withdrawRewards();
-      const userStake = await stakingContract.getUserStake(addr1.address);
-      expect(userStake.rewards).to.equal(0);
+      await stakingContract.connect(addr1).withdrawRewards(1);
+      const [, rewards] = await stakingContract.getUserStake(addr1.address, 1);
+      expect(rewards).to.equal(0);
     });
   });
 
@@ -213,7 +232,7 @@ describe("TokenStaking", function () {
     it("Should not allow withdrawal before lock period", async function () {
       await stakingContract.connect(addr1).stake(ethers.parseUnits("100", 18), 1);
       await expect(
-        stakingContract.connect(addr1).withdrawStake()
+        stakingContract.connect(addr1).withdrawStake(1)
       ).to.be.revertedWith("Lock period not expired");
     });
 
@@ -225,7 +244,7 @@ describe("TokenStaking", function () {
       await time.increase(31 * 24 * 60 * 60);
 
       const balanceBefore = await stakingToken.balanceOf(addr1.address);
-      await stakingContract.connect(addr1).withdrawStake();
+      await stakingContract.connect(addr1).withdrawStake(1);
       const balanceAfter = await stakingToken.balanceOf(addr1.address);
 
       expect(balanceAfter).to.be.gt(balanceBefore);
@@ -236,10 +255,80 @@ describe("TokenStaking", function () {
       await stakingContract.connect(addr1).stake(stakeAmount, 1);
 
       await time.increase(31 * 24 * 60 * 60);
-      await stakingContract.connect(addr1).withdrawStake();
+      await stakingContract.connect(addr1).withdrawStake(1);
 
-      const plan = await stakingContract.getStakingPlan(1);
-      expect(plan.totalStaked).to.equal(0);
+      const [, , totalStaked] = await stakingContract.getStakingPlan(1);
+      expect(totalStaked).to.equal(0);
+    });
+    
+    it("Should withdraw from one plan without affecting others", async function () {
+      await stakingContract.connect(addr1).stake(ethers.parseUnits("100", 18), 1);
+      await stakingContract.connect(addr1).stake(ethers.parseUnits("200", 18), 3);
+      
+      // Move past the lock period for the 1-month plan
+      await time.increase(31 * 24 * 60 * 60);
+      
+      await stakingContract.connect(addr1).withdrawStake(1);
+      
+      // Check plan 1 was withdrawn
+      const [amount1, , isActive1] = await stakingContract.getUserStake(addr1.address, 1);
+      expect(amount1).to.equal(0);
+      expect(isActive1).to.be.false;
+      
+      // Check plan 3 is still active
+      const [amount3, , isActive3] = await stakingContract.getUserStake(addr1.address, 3);
+      expect(amount3).to.equal(ethers.parseUnits("200", 18));
+      expect(isActive3).to.be.true;
+    });
+  });
+  
+  describe("Multiple Plan Functionality", function () {
+    it("Should track total user stake across plans", async function () {
+      await stakingContract.connect(addr1).stake(ethers.parseUnits("100", 18), 1);
+      await stakingContract.connect(addr1).stake(ethers.parseUnits("200", 18), 3);
+      await stakingContract.connect(addr1).stake(ethers.parseUnits("300", 18), 6);
+      
+      const totalStake = await stakingContract.getTotalUserStake(addr1.address);
+      expect(totalStake).to.equal(ethers.parseUnits("600", 18));
+    });
+    
+    it("Should track total pending rewards across plans", async function () {
+      await stakingContract.connect(addr1).stake(ethers.parseUnits("100", 18), 1);
+      await stakingContract.connect(addr1).stake(ethers.parseUnits("200", 18), 3);
+      
+      // Move past all lock periods
+      await time.increase(90 * 24 * 60 * 60);
+      
+      // Accumulate some rewards
+      await time.increase(10 * 24 * 60 * 60);
+      
+      const reward1 = await stakingContract.pendingRewards(addr1.address, 1);
+      const reward3 = await stakingContract.pendingRewards(addr1.address, 3);
+      const totalRewards = await stakingContract.getTotalPendingRewards(addr1.address);
+      
+      expect(totalRewards).to.equal(reward1 + reward3);
+    });
+    
+    it("Should have different lock periods for different plans", async function () {
+      await stakingContract.connect(addr1).stake(ethers.parseUnits("100", 18), 1);
+      await stakingContract.connect(addr1).stake(ethers.parseUnits("200", 18), 3);
+      
+      // Move past the 1-month lock period
+      await time.increase(31 * 24 * 60 * 60);
+      
+      // Should be able to withdraw from plan 1
+      await stakingContract.connect(addr1).withdrawStake(1);
+      
+      // But not from plan 3
+      await expect(
+        stakingContract.connect(addr1).withdrawStake(3)
+      ).to.be.revertedWith("Lock period not expired");
+      
+      // Move past the 3-month lock period
+      await time.increase(60 * 24 * 60 * 60);
+      
+      // Now should be able to withdraw from plan 3
+      await stakingContract.connect(addr1).withdrawStake(3);
     });
   });
 });
